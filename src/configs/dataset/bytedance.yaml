@@ -1,0 +1,18 @@
+# Common Features
+USER_ID_FIELD: uid
+ITEM_ID_FIELD: item_id
+#RATING_FIELD: rating
+TIME_FIELD: create_time
+
+filter_out_cod_start_users: True
+
+inter_file_name: 'splited_bytedance-indexed.inter'
+
+# name of features
+vision_feature_file: 'video_feat.npy'
+audio_feature_file: 'audio_feat.npy'
+text_feature_file: 'text_feat.npy'
+
+user_graph_dict_file: 'user_graph_dict_file.npy'
+
+field_separator: "\t"

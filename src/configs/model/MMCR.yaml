@@ -1,0 +1,11 @@
+embedding_size: 64
+n_layers: [3, 4, 5]
+cl_weight: [0.5, 1 , 1.5]
+tau: 0.5
+m: 0.99
+drop_rate: 0.1
+dim_latent: 64
+aggr_mode: 'add'
+reg_weight: [0.0001, 0.00001]
+learning_rate: [0.001, 0.01]
+hyper_parameters: ["n_layers", "cl_weight" ,"learning_rate", "reg_weight"]
