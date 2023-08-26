@@ -36,10 +36,14 @@ class MMCR(GeneralRecommender):
         self.dim_latent = config['dim_latent']
         self.cl_weight = config['cl_weight'] / 6.0
 
-        self.MLP_v = nn.Linear(128, self.dim_latent, bias=False)
-        self.MLP_a = nn.Linear(128, self.dim_latent, bias=False)
-        self.MLP_t = nn.Linear(64, self.dim_latent, bias=False)
+        self.MLP_v = nn.Linear(128, self.dim_latent)
+        nn.init.xavier_uniform_(self.MLP_v.weight)
+        self.MLP_a = nn.Linear(128, self.dim_latent)
+        nn.init.xavier_uniform_(self.MLP_a.weight)
+        self.MLP_t = nn.Linear(64, self.dim_latent)
+        nn.init.xavier_uniform_(self.MLP_t.weight)
 
+        
 
         dataset_path = os.path.abspath(config['data_path'] + config['dataset'])
         self.user_graph_dict = np.load(os.path.join(dataset_path, config['user_graph_dict_file']), allow_pickle=True).item()
@@ -51,10 +55,24 @@ class MMCR(GeneralRecommender):
         self.edge_index = torch.cat((self.edge_index, self.edge_index[[1, 0]]), dim=1)
 
     
-        self.u_e = nn.Parameter(nn.init.xavier_uniform_(torch.empty(self.n_users, self.dim_latent)))
-        self.i_e = nn.Parameter(nn.init.xavier_uniform_(torch.empty(self.n_items, self.dim_latent)))
-       
+        self.u_e = nn.Parameter(nn.init.xavier_uniform_(torch.empty(self.n_users, self.dim_latent), gain=1))
+        self.i_e = nn.Parameter(nn.init.xavier_uniform_(torch.empty(self.n_items, self.dim_latent), gain=1))
 
+        self.rec_iv = nn.Linear(self.dim_latent, self.dim_latent)
+        nn.init.xavier_uniform_(self.rec_iv.weight)
+        self.rec_ia = nn.Linear(self.dim_latent, self.dim_latent)
+        nn.init.xavier_uniform_(self.rec_ia.weight)
+        self.rec_it = nn.Linear(self.dim_latent, self.dim_latent)
+        nn.init.xavier_uniform_(self.rec_it.weight)
+        
+        self.rec_uv = nn.Linear(self.dim_latent, self.dim_latent)
+        nn.init.xavier_uniform_(self.rec_uv.weight)
+        self.rec_ua = nn.Linear(self.dim_latent, self.dim_latent)
+        nn.init.xavier_uniform_(self.rec_ua.weight)        
+        self.rec_ut = nn.Linear(self.dim_latent, self.dim_latent)
+        nn.init.xavier_uniform_(self.rec_ut.weight)
+        
+        
         if self.v_feat is not None:
             self.v_gcn = GCN(self.dataset, self.n_users, self.n_items, dim_x, self.aggr_mode,
                          num_layer=self.num_layer, has_id=has_id, dropout=self.drop_rate, dim_latent=64,
@@ -73,8 +91,10 @@ class MMCR(GeneralRecommender):
                          device=self.device)
 
         self.ssl_criterion = nn.CrossEntropyLoss()
+        self.rec_criterion = nn.MSELoss()
 
         self.reg_loss = L2Loss()
+        self.scl_criterion = nn.KLDivLoss()
 
 
 
@@ -88,6 +108,9 @@ class MMCR(GeneralRecommender):
         user_nodes, pos_item_nodes, neg_item_nodes = interaction[0], interaction[1], interaction[2]
         pos_item_nodes += self.n_users
         neg_item_nodes += self.n_users
+        self.v_feat = torch.nn.functional.normalize(self.v_feat, dim=1)
+        self.a_feat = torch.nn.functional.normalize(self.a_feat, dim=1)
+        self.t_feat = torch.nn.functional.normalize(self.t_feat, dim=1)
         v_feat = self.MLP_v(self.v_feat)
         a_feat = self.MLP_a(self.a_feat)
         t_feat = self.MLP_t(self.t_feat)
@@ -135,13 +158,22 @@ class MMCR(GeneralRecommender):
         rec_rep = self.rec_gcn(self.edge_index, self.u_e, self.i_e)
         rec_item_rep = rec_rep[self.n_users:]
         rec_user_rep = rec_rep[:self.n_users]
-        item_e = (rec_item_rep + v_item_rep + a_item_rep + t_item_rep) / 4.
-        user_e = (rec_user_rep + v_user_rep + a_user_rep + t_user_rep) / 4.
-        self.result_emb = torch.cat((user_e, item_e), dim=0)
+        # self.item_e = (rec_item_rep + v_item_rep + a_item_rep + t_item_rep) / 4.
+        # self.user_e = (rec_user_rep + v_user_rep + a_user_rep + t_user_rep) / 4.
+        
+        self.result_emb = torch.cat((rec_user_rep, rec_item_rep), dim=0)
 
         pos_item_tensor = self.result_emb[pos_item_nodes]
         neg_item_tensor = self.result_emb[neg_item_nodes]
         user_tensor = self.result_emb[user_nodes]
+        
+        
+        self.rec_item_ev = self.rec_iv(user_tensor)
+        self.rec_item_ea = self.rec_ia(user_tensor)
+        self.rec_item_et = self.rec_it(user_tensor)
+        self.rec_user_ev = self.rec_uv(pos_item_tensor)
+        self.rec_user_ea = self.rec_ua(pos_item_tensor)
+        self.rec_user_et = self.rec_ut(pos_item_tensor)
 
         pos_scores = torch.sum(user_tensor * pos_item_tensor, dim=1)
         neg_scores = torch.sum(user_tensor * neg_item_tensor, dim=1)
@@ -165,9 +197,17 @@ class MMCR(GeneralRecommender):
         device = z1.device
         f = lambda x: torch.exp(x / self.tau)   
         
-        labels  = torch.tensor(list(range(z1.shape[0]))).to(device)
+        # labels  = torch.tensor(list(range(z1.shape[0]))).to(device)
         logits = f(self.sim(z1, z2))
-        return self.ssl_criterion(logits, labels)
+        labels = torch.eye(*logits.shape).to(device)
+        x_norm = torch.sqrt(logits)
+        adj = labels.mul(torch.div(torch.sqrt(x_norm),  torch.trace(x_norm)))
+        rows = adj.sum(dim=1, keepdim=True) 
+        rows[rows==0] = 1
+        adj = adj / rows
+        
+        # return self.ssl_criterion(logits, labels)
+        return self.scl_criterion(logits, labels)
 
 
     def calculate_loss(self, interaction):
@@ -195,8 +235,12 @@ class MMCR(GeneralRecommender):
         user_va = self.contrastive_loss(self.user_v , self.user_a )
         user_vt = self.contrastive_loss(self.user_v , self.user_t )
         user_at = self.contrastive_loss(self.user_a , self.user_t )
+
+        # l2 l2
+        rec_loss = self.rec_criterion(self.rec_user_ev, self.user_v) + self.rec_criterion(self.rec_user_ea, self.user_a) + self.rec_criterion(self.rec_user_et, self.user_t) 
+        + self.rec_criterion(self.rec_item_ev, self.pos_v_tensor) + self.rec_criterion(self.rec_item_ea, self.pos_a_tensor) + self.rec_criterion(self.rec_item_et, self.pos_t_tensor)
         
-        return bpr_loss + reg_loss + self.cl_weight * (item_va + item_vt + item_at + user_va + user_vt + user_at)
+        return bpr_loss + reg_loss + rec_loss + self.cl_weight * (item_va + item_vt + item_at + user_va + user_vt + user_at)
 
     def full_sort_predict(self, interaction):
         user = interaction[0]
@@ -247,12 +291,10 @@ class GCN(torch.nn.Module):
         # temp_features = self.MLP_1(F.leaky_relu(self.MLP(item))) if self.dim_latent else item
         # item = F.normalize(item)
         x = torch.cat((user, item), dim=0).to(self.device)
-        x = F.normalize(x).to(self.device)
         # h = self.conv_embed_1(x, edge_index)  # equation 1
         # h_1 = self.conv_embed_1(h, edge_index)
         for gcn in self.gcns:
-            x_ = gcn(x, edge_index)
-            x = x + x_
+            x = gcn(x, edge_index) + x
         # x_hat = h + x + h_1
         return x
 
@@ -265,17 +307,13 @@ class Base_gcn(MessagePassing):
         self.out_channels = out_channels
 
     def forward(self, x, edge_index, size=None):
-        # pdb.set_trace()
         if size is None:
             edge_index, _ = remove_self_loops(edge_index)
-            # edge_index, _ = add_self_loops(edge_index, num_nodes=x.size(0))
         x = x.unsqueeze(-1) if x.dim() == 1 else x
-        # pdb.set_trace()
         return self.propagate(edge_index, size=(x.size(0), x.size(0)), x=x)
 
     def message(self, x_j, edge_index, size):
         if self.aggr == 'add':
-            # pdb.set_trace()
             row, col = edge_index
             deg = degree(row, size[0], dtype=x_j.dtype)
             deg_inv_sqrt = deg.pow(-0.5)
