@@ -199,6 +199,7 @@ class MMCR(GeneralRecommender):
         
         # labels  = torch.tensor(list(range(z1.shape[0]))).to(device)
         logits = f(self.sim(z1, z2))
+        
         labels = torch.eye(*logits.shape).to(device)
         x_norm = torch.sqrt(logits)
         adj = labels.mul(torch.div(torch.sqrt(x_norm),  torch.trace(x_norm)))
