@@ -13,6 +13,7 @@ vision_feature_file: 'video_feat.npy'
 audio_feature_file: 'audio_feat.npy'
 text_feature_file: 'text_feat.npy'
 
-user_graph_dict_file: 'user_graph_dict_file.npy'
+item_graph_dict_file: 'sparse_item_graph_dict_file.npy'
+user_graph_dict_file: 'sparse_user_graph_dict_file.npy'
 
 field_separator: "\t"
