@@ -46,7 +46,9 @@ class MMCR(GeneralRecommender):
         
 
         dataset_path = os.path.abspath(config['data_path'] + config['dataset'])
+        self.item_graph_dict = np.load(os.path.join(dataset_path, config['item_graph_dict_file']), allow_pickle=True).item()
         self.user_graph_dict = np.load(os.path.join(dataset_path, config['user_graph_dict_file']), allow_pickle=True).item()
+
 
         # packing interaction in training into edge_index
         train_interactions = dataset.inter_matrix(form='coo').astype(np.float32)
@@ -90,11 +92,13 @@ class MMCR(GeneralRecommender):
                          num_layer=self.num_layer, has_id=has_id, dropout=self.drop_rate, dim_latent=64,
                          device=self.device)
 
-        self.ssl_criterion = nn.CrossEntropyLoss()
+        # self.ssl_criterion = nn.CrossEntropyLoss()
+        self.ssl_criterion = nn.BCEWithLogitsLoss
         self.rec_criterion = nn.MSELoss()
 
         self.reg_loss = L2Loss()
-        self.scl_criterion = nn.KLDivLoss()
+        self.scl_criterion = nn.KLDivLoss(reduce='batchmean')
+        self.log_softmax = nn.LogSoftmax()
 
 
 
@@ -167,6 +171,8 @@ class MMCR(GeneralRecommender):
         neg_item_tensor = self.result_emb[neg_item_nodes]
         user_tensor = self.result_emb[user_nodes]
         
+        self.pos_item_nodes = pos_item_nodes
+        self.user_nodes = user_nodes
         
         self.rec_item_ev = self.rec_iv(user_tensor)
         self.rec_item_ea = self.rec_ia(user_tensor)
@@ -193,22 +199,29 @@ class MMCR(GeneralRecommender):
         z2 = F.normalize(z2)
         return torch.mm(z1, z2.t())
     
-    def contrastive_loss(self, z1, z2):
+    def contrastive_loss(self, z1, z2, tag):
         device = z1.device
         f = lambda x: torch.exp(x / self.tau)   
         
-        # labels  = torch.tensor(list(range(z1.shape[0]))).to(device)
+        # labels = None
+        # num = z1.shape[0]
+        # labels = torch.zeros((num, num))
+        # if tag == 'item':
+            
+        labels = torch.tensor(list(range(z1.shape[0]))).to(device)
+        
         logits = f(self.sim(z1, z2))
+        return self.ssl_criterion(logits, labels)
+    
+        # labels = torch.eye(*logits.shape).to(device)
+        # x_norm = torch.sqrt(logits)
+        # adj = labels.mul(torch.div(x_norm,  torch.trace(x_norm)))
+        # rows = adj.sum(dim=1, keepdim=True) 
+        # rows[rows==0] = 1
+        # adj = adj / rows
         
-        labels = torch.eye(*logits.shape).to(device)
-        x_norm = torch.sqrt(logits)
-        adj = labels.mul(torch.div(torch.sqrt(x_norm),  torch.trace(x_norm)))
-        rows = adj.sum(dim=1, keepdim=True) 
-        rows[rows==0] = 1
-        adj = adj / rows
         
-        # return self.ssl_criterion(logits, labels)
-        return self.scl_criterion(logits, labels)
+        # return self.scl_criterion(self.log_softmax(logits), adj.softmax(dim=-1))
 
 
     def calculate_loss(self, interaction):
@@ -294,6 +307,7 @@ class GCN(torch.nn.Module):
         x = torch.cat((user, item), dim=0).to(self.device)
         # h = self.conv_embed_1(x, edge_index)  # equation 1
         # h_1 = self.conv_embed_1(h, edge_index)
+        import pdb; pdb.set_trace()
         for gcn in self.gcns:
             x = gcn(x, edge_index) + x
         # x_hat = h + x + h_1
