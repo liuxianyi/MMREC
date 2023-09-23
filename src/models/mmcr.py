@@ -35,6 +35,8 @@ class MMCR(GeneralRecommender):
         self.drop_rate = config['drop_rate']
         self.dim_latent = config['dim_latent']
         self.cl_weight = config['cl_weight'] / 6.0
+        self.hyperNum = config['hyperNum']
+        self.hyper_keep_rate = config['hyper_keep_rate']
 
         self.MLP_v = nn.Linear(128, self.dim_latent)
         nn.init.xavier_uniform_(self.MLP_v.weight)
@@ -59,6 +61,8 @@ class MMCR(GeneralRecommender):
     
         self.u_e = nn.Parameter(nn.init.xavier_uniform_(torch.empty(self.n_users, self.dim_latent), gain=1))
         self.i_e = nn.Parameter(nn.init.xavier_uniform_(torch.empty(self.n_items, self.dim_latent), gain=1))
+        self.u_Hyper = nn.Parameter(nn.init.xavier_uniform_(torch.empty(self.dim_latent, self.hyperNum)))
+        self.i_Hyper = nn.Parameter(nn.init.xavier_uniform_(torch.empty(self.dim_latent, self.hyperNum)))
 
         self.rec_iv = nn.Linear(self.dim_latent, self.dim_latent)
         nn.init.xavier_uniform_(self.rec_iv.weight)
@@ -79,6 +83,7 @@ class MMCR(GeneralRecommender):
             self.v_gcn = GCN(self.dataset, self.n_users, self.n_items, dim_x, self.aggr_mode,
                          num_layer=self.num_layer, has_id=has_id, dropout=self.drop_rate, dim_latent=64,
                          device=self.device)  # 256)
+        
         if self.t_feat is not None:
             self.t_gcn = GCN(self.dataset, self.n_users, self.n_items, dim_x, self.aggr_mode,
                          num_layer=self.num_layer, has_id=has_id, dropout=self.drop_rate, dim_latent=64,
@@ -92,8 +97,11 @@ class MMCR(GeneralRecommender):
                          num_layer=self.num_layer, has_id=has_id, dropout=self.drop_rate, dim_latent=64,
                          device=self.device)
 
-        # self.ssl_criterion = nn.CrossEntropyLoss()
-        self.ssl_criterion = nn.BCEWithLogitsLoss
+        
+        self.user_hyper_gcn = HyperGNN(keep_rate=self.hyper_keep_rate)
+        self.item_hyper_gcn = HyperGNN(keep_rate=self.hyper_keep_rate)
+
+        self.ssl_criterion = nn.CrossEntropyLoss()
         self.rec_criterion = nn.MSELoss()
 
         self.reg_loss = L2Loss()
@@ -140,6 +148,8 @@ class MMCR(GeneralRecommender):
         self.pos_v_tensor = v_e[pos_item_nodes]
         self.neg_v_tensor = v_e[neg_item_nodes]
         self.user_v = v_e[user_nodes]
+        self.hyper_user_v = self.user_hyper_gcn(self.user_v @ self.u_Hyper, self.user_v)
+        self.hyper_pos_v_tensor = self.item_hyper_gcn(self.pos_v_tensor @ self.i_Hyper, self.pos_v_tensor)
 
         a_item_rep = a_rep[self.n_users:]
         a_user_rep = a_rep[:self.n_users]
@@ -147,6 +157,8 @@ class MMCR(GeneralRecommender):
         self.pos_a_tensor = a_e[pos_item_nodes]
         self.neg_a_tensor = a_e[neg_item_nodes]
         self.user_a = a_e[user_nodes]
+        self.hyper_user_a = self.user_hyper_gcn(self.user_a @ self.u_Hyper, self.user_a)
+        self.hyper_pos_a_tensor = self.item_hyper_gcn(self.pos_a_tensor @ self.i_Hyper, self.pos_a_tensor)
 
 
 
@@ -156,6 +168,8 @@ class MMCR(GeneralRecommender):
         self.pos_t_tensor = t_e[pos_item_nodes]
         self.neg_t_tensor = t_e[neg_item_nodes]
         self.user_t = t_e[user_nodes]
+        self.hyper_user_t = self.user_hyper_gcn(self.user_t @ self.u_Hyper, self.user_t)
+        self.hyper_pos_t_tensor = self.item_hyper_gcn(self.pos_t_tensor @ self.i_Hyper, self.pos_t_tensor)
 
 
         self._momentum_update_tuning()
@@ -171,8 +185,7 @@ class MMCR(GeneralRecommender):
         neg_item_tensor = self.result_emb[neg_item_nodes]
         user_tensor = self.result_emb[user_nodes]
         
-        self.pos_item_nodes = pos_item_nodes
-        self.user_nodes = user_nodes
+
         
         self.rec_item_ev = self.rec_iv(user_tensor)
         self.rec_item_ea = self.rec_ia(user_tensor)
@@ -199,18 +212,12 @@ class MMCR(GeneralRecommender):
         z2 = F.normalize(z2)
         return torch.mm(z1, z2.t())
     
-    def contrastive_loss(self, z1, z2, tag):
+    def contrastive_loss(self, z1, z2):
         device = z1.device
         f = lambda x: torch.exp(x / self.tau)   
         
-        # labels = None
-        # num = z1.shape[0]
-        # labels = torch.zeros((num, num))
-        # if tag == 'item':
-            
-        labels = torch.tensor(list(range(z1.shape[0]))).to(device)
-        
         logits = f(self.sim(z1, z2))
+        labels = torch.eye(*logits.shape).to(device)
         return self.ssl_criterion(logits, labels)
     
         # labels = torch.eye(*logits.shape).to(device)
@@ -243,12 +250,13 @@ class MMCR(GeneralRecommender):
 
         reg_loss = self.reg_weight * l2_loss
 
-        item_va = self.contrastive_loss(self.pos_v_tensor, self.pos_a_tensor)
-        item_vt = self.contrastive_loss(self.pos_v_tensor, self.pos_t_tensor)
-        item_at = self.contrastive_loss(self.pos_a_tensor, self.pos_t_tensor)
-        user_va = self.contrastive_loss(self.user_v , self.user_a )
-        user_vt = self.contrastive_loss(self.user_v , self.user_t )
-        user_at = self.contrastive_loss(self.user_a , self.user_t )
+        # import pdb; pdb.set_trace()
+        item_va = self.contrastive_loss(self.hyper_pos_v_tensor, self.hyper_pos_a_tensor)
+        item_vt = self.contrastive_loss(self.hyper_pos_v_tensor, self.hyper_pos_t_tensor)
+        item_at = self.contrastive_loss(self.hyper_pos_a_tensor, self.hyper_pos_t_tensor)
+        user_va = self.contrastive_loss(self.hyper_user_v , self.hyper_user_a)
+        user_vt = self.contrastive_loss(self.hyper_user_v , self.hyper_user_t)
+        user_at = self.contrastive_loss(self.hyper_user_a , self.hyper_user_t)
 
         # l2 l2
         rec_loss = self.rec_criterion(self.rec_user_ev, self.user_v) + self.rec_criterion(self.rec_user_ea, self.user_a) + self.rec_criterion(self.rec_user_et, self.user_t) 
@@ -281,6 +289,16 @@ class User_Graph_sample(torch.nn.Module):
         u_pre = u_pre.squeeze()
         return u_pre
 
+class HyperGNN(nn.Module):
+    def __init__(self, keep_rate):
+        super().__init__()
+        self.keep_rate = keep_rate
+    def forward(self, adj, embeds):
+        adj = F.dropout(adj, 1-self.keep_rate)
+        lat = (adj.T @ embeds)
+        # ret = (adj @ lat)
+        ret = lat
+        return ret
 
 class GCN(torch.nn.Module):
     def __init__(self,datasets, num_user, num_item, dim_id, aggr_mode, num_layer, has_id, dropout,
@@ -307,7 +325,6 @@ class GCN(torch.nn.Module):
         x = torch.cat((user, item), dim=0).to(self.device)
         # h = self.conv_embed_1(x, edge_index)  # equation 1
         # h_1 = self.conv_embed_1(h, edge_index)
-        import pdb; pdb.set_trace()
         for gcn in self.gcns:
             x = gcn(x, edge_index) + x
         # x_hat = h + x + h_1
