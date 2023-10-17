@@ -1,13 +1,14 @@
 embedding_size: 64
 n_layers: 3
 hyperNum: 64
-hyper_keep_rate: 0.5
+hyper_layers: 1
+hyper_keep_rate: 0.8
 cl_weight: 0.7
-tau: [0.3, 0.4, 0.5, 0.6, 0.7, 0.8]
+tau: 0.7
 m: 0.99
 drop_rate: 0.1
 dim_latent: 64
 aggr_mode: 'add'
 reg_weight: 0.0001
-learning_rate: 0.001
-hyper_parameters: ["tau"]
+learning_rate: 0.0001
+hyper_parameters: []
