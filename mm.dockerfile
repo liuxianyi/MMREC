@@ -13,10 +13,10 @@ LABEL maintainer="goog"
 RUN apt update
 
 RUN apt-get install -y g++ 
-
-RUN pip install dgl -i https://pypi.douban.com/simple
-RUN pip install visdom -i https://pypi.douban.com/simple
-RUN pip install scikit-learn -i https://pypi.douban.com/simple
+# -i https://pypi.douban.com/simple
+RUN pip install dgl 
+RUN pip install visdom 
+RUN pip install scikit-learn
 RUN pip install tensorboard
 RUN pip install pandas
 RUN pip install lmdb

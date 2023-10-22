@@ -7,6 +7,7 @@ import os
 import numpy as np
 import scipy.sparse as sp
 import torch
+
 import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.nn.conv import MessagePassing
@@ -37,6 +38,7 @@ class MMCR(GeneralRecommender):
         self.cl_weight = config['cl_weight'] / 6.0
         self.hyperNum = config['hyperNum']
         self.hyper_keep_rate = config['hyper_keep_rate']
+        self.hyper_layers = config['hyper_layers']
 
         self.MLP_v = nn.Linear(128, self.dim_latent)
         nn.init.xavier_uniform_(self.MLP_v.weight)
@@ -61,22 +63,45 @@ class MMCR(GeneralRecommender):
     
         self.u_e = nn.Parameter(nn.init.xavier_uniform_(torch.empty(self.n_users, self.dim_latent), gain=1))
         self.i_e = nn.Parameter(nn.init.xavier_uniform_(torch.empty(self.n_items, self.dim_latent), gain=1))
-        self.u_Hyper = nn.Parameter(nn.init.xavier_uniform_(torch.empty(self.dim_latent, self.hyperNum)))
-        self.i_Hyper = nn.Parameter(nn.init.xavier_uniform_(torch.empty(self.dim_latent, self.hyperNum)))
+        self.u_Hyper = nn.Parameter(nn.init.xavier_uniform_(torch.empty(self.dim_latent, self.hyperNum), gain=1))
+        self.i_Hyper = nn.Parameter(nn.init.xavier_uniform_(torch.empty(self.dim_latent, self.hyperNum), gain=1))
+    
+        self.rec_iv = nn.Sequential(
+            nn.Linear(self.dim_latent, self.dim_latent),
+            nn.Tanh(),
+            nn.Linear(self.dim_latent, self.dim_latent),
+        )                               
 
-        self.rec_iv = nn.Linear(self.dim_latent, self.dim_latent)
-        nn.init.xavier_uniform_(self.rec_iv.weight)
-        self.rec_ia = nn.Linear(self.dim_latent, self.dim_latent)
-        nn.init.xavier_uniform_(self.rec_ia.weight)
-        self.rec_it = nn.Linear(self.dim_latent, self.dim_latent)
-        nn.init.xavier_uniform_(self.rec_it.weight)
+        self.rec_ia = nn.Sequential(
+            nn.Linear(self.dim_latent, self.dim_latent),
+            nn.Tanh(),
+            nn.Linear(self.dim_latent, self.dim_latent),
+        )
+
+        self.rec_it = nn.Sequential(
+            nn.Linear(self.dim_latent, self.dim_latent),
+            nn.Tanh(),
+            nn.Linear(self.dim_latent, self.dim_latent),
+        )
         
-        self.rec_uv = nn.Linear(self.dim_latent, self.dim_latent)
-        nn.init.xavier_uniform_(self.rec_uv.weight)
-        self.rec_ua = nn.Linear(self.dim_latent, self.dim_latent)
-        nn.init.xavier_uniform_(self.rec_ua.weight)        
-        self.rec_ut = nn.Linear(self.dim_latent, self.dim_latent)
-        nn.init.xavier_uniform_(self.rec_ut.weight)
+        self.rec_uv = nn.Sequential(
+            nn.Linear(self.dim_latent, self.dim_latent),
+            nn.Tanh(),
+            nn.Linear(self.dim_latent, self.dim_latent),
+        )
+        
+        self.rec_ua = nn.Sequential(
+            nn.Linear(self.dim_latent, self.dim_latent),
+            nn.Tanh(),
+            nn.Linear(self.dim_latent, self.dim_latent),
+        )
+        
+        self.rec_ut = nn.Sequential(
+            nn.Linear(self.dim_latent, self.dim_latent),
+            nn.Tanh(), 
+            nn.Linear(self.dim_latent, self.dim_latent),
+        )
+        
         
         
         if self.v_feat is not None:
@@ -98,8 +123,9 @@ class MMCR(GeneralRecommender):
                          device=self.device)
 
         
-        self.user_hyper_gcn = HyperGNN(keep_rate=self.hyper_keep_rate)
-        self.item_hyper_gcn = HyperGNN(keep_rate=self.hyper_keep_rate)
+        self.user_hyper_gcn = HyperGNN(keep_rate=self.hyper_keep_rate, layers=self.hyper_layers)
+        self.item_hyper_gcn = HyperGNN(keep_rate=self.hyper_keep_rate, layers=self.hyper_layers)
+        
 
         self.ssl_criterion = nn.CrossEntropyLoss()
         self.rec_criterion = nn.MSELoss()
@@ -148,8 +174,8 @@ class MMCR(GeneralRecommender):
         self.pos_v_tensor = v_e[pos_item_nodes]
         self.neg_v_tensor = v_e[neg_item_nodes]
         self.user_v = v_e[user_nodes]
-        self.hyper_user_v = self.user_hyper_gcn(self.user_v @ self.u_Hyper, self.user_v)
-        self.hyper_pos_v_tensor = self.item_hyper_gcn(self.pos_v_tensor @ self.i_Hyper, self.pos_v_tensor)
+        # self.hyper_user_v = self.user_hyper_gcn(self.user_v @ self.u_Hyper, self.user_v)
+        # self.hyper_pos_v_tensor = self.item_hyper_gcn(self.pos_v_tensor @ self.i_Hyper, self.pos_v_tensor)
 
         a_item_rep = a_rep[self.n_users:]
         a_user_rep = a_rep[:self.n_users]
@@ -157,8 +183,8 @@ class MMCR(GeneralRecommender):
         self.pos_a_tensor = a_e[pos_item_nodes]
         self.neg_a_tensor = a_e[neg_item_nodes]
         self.user_a = a_e[user_nodes]
-        self.hyper_user_a = self.user_hyper_gcn(self.user_a @ self.u_Hyper, self.user_a)
-        self.hyper_pos_a_tensor = self.item_hyper_gcn(self.pos_a_tensor @ self.i_Hyper, self.pos_a_tensor)
+        # self.hyper_user_a = self.user_hyper_gcn(self.user_a @ self.u_Hyper, self.user_a)
+        # self.hyper_pos_a_tensor = self.item_hyper_gcn(self.pos_a_tensor @ self.i_Hyper, self.pos_a_tensor)
 
 
 
@@ -168,16 +194,16 @@ class MMCR(GeneralRecommender):
         self.pos_t_tensor = t_e[pos_item_nodes]
         self.neg_t_tensor = t_e[neg_item_nodes]
         self.user_t = t_e[user_nodes]
-        self.hyper_user_t = self.user_hyper_gcn(self.user_t @ self.u_Hyper, self.user_t)
-        self.hyper_pos_t_tensor = self.item_hyper_gcn(self.pos_t_tensor @ self.i_Hyper, self.pos_t_tensor)
+        # self.hyper_user_t = self.user_hyper_gcn(self.user_t @ self.u_Hyper, self.user_t)
+        # self.hyper_pos_t_tensor = self.item_hyper_gcn(self.pos_t_tensor @ self.i_Hyper, self.pos_t_tensor)
 
 
         self._momentum_update_tuning()
         rec_rep = self.rec_gcn(self.edge_index, self.u_e, self.i_e)
         rec_item_rep = rec_rep[self.n_users:]
         rec_user_rep = rec_rep[:self.n_users]
-        # self.item_e = (rec_item_rep + v_item_rep + a_item_rep + t_item_rep) / 4.
-        # self.user_e = (rec_user_rep + v_user_rep + a_user_rep + t_user_rep) / 4.
+        self.item_e = (rec_item_rep + v_item_rep + a_item_rep + t_item_rep) / 4.
+        self.user_e = (rec_user_rep + v_user_rep + a_user_rep + t_user_rep) / 4.
         
         self.result_emb = torch.cat((rec_user_rep, rec_item_rep), dim=0)
 
@@ -250,13 +276,19 @@ class MMCR(GeneralRecommender):
 
         reg_loss = self.reg_weight * l2_loss
 
-        # import pdb; pdb.set_trace()
-        item_va = self.contrastive_loss(self.hyper_pos_v_tensor, self.hyper_pos_a_tensor)
-        item_vt = self.contrastive_loss(self.hyper_pos_v_tensor, self.hyper_pos_t_tensor)
-        item_at = self.contrastive_loss(self.hyper_pos_a_tensor, self.hyper_pos_t_tensor)
-        user_va = self.contrastive_loss(self.hyper_user_v , self.hyper_user_a)
-        user_vt = self.contrastive_loss(self.hyper_user_v , self.hyper_user_t)
-        user_at = self.contrastive_loss(self.hyper_user_a , self.hyper_user_t)
+        # item_va = self.contrastive_loss(self.hyper_pos_v_tensor, self.hyper_pos_a_tensor)
+        # item_vt = self.contrastive_loss(self.hyper_pos_v_tensor, self.hyper_pos_t_tensor)
+        # item_at = self.contrastive_loss(self.hyper_pos_a_tensor, self.hyper_pos_t_tensor)
+        # user_va = self.contrastive_loss(self.hyper_user_v , self.hyper_user_a)
+        # user_vt = self.contrastive_loss(self.hyper_user_v , self.hyper_user_t)
+        # user_at = self.contrastive_loss(self.hyper_user_a , self.hyper_user_t)
+
+        item_va = self.contrastive_loss(self.pos_v_tensor, self.pos_a_tensor)
+        item_vt = self.contrastive_loss(self.pos_v_tensor, self.pos_t_tensor)
+        item_at = self.contrastive_loss(self.pos_a_tensor, self.pos_t_tensor)
+        user_va = self.contrastive_loss(self.user_v , self.user_a)
+        user_vt = self.contrastive_loss(self.user_v , self.user_t)
+        user_at = self.contrastive_loss(self.user_a , self.user_t)
 
         # l2 l2
         rec_loss = self.rec_criterion(self.rec_user_ev, self.user_v) + self.rec_criterion(self.rec_user_ea, self.user_a) + self.rec_criterion(self.rec_user_et, self.user_t) 
@@ -290,14 +322,16 @@ class User_Graph_sample(torch.nn.Module):
         return u_pre
 
 class HyperGNN(nn.Module):
-    def __init__(self, keep_rate):
+    def __init__(self, keep_rate, layers):
         super().__init__()
         self.keep_rate = keep_rate
+        self.layers = layers
     def forward(self, adj, embeds):
+
         adj = F.dropout(adj, 1-self.keep_rate)
         lat = (adj.T @ embeds)
-        # ret = (adj @ lat)
-        ret = lat
+        ret = (adj @ lat)
+        # ret = lat
         return ret
 
 class GCN(torch.nn.Module):
