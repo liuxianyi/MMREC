@@ -103,14 +103,14 @@ class GeneralRecommender(AbstractRecommender):
             if os.path.isfile(a_feat_file_path):
                 self.a_feat = torch.from_numpy(np.load(a_feat_file_path, allow_pickle=True)).type(torch.FloatTensor).to(
                     self.device)
-            if config['dataset'] == 'bytedance':
-                self.v_feat = (self.v_feat - 0.212) / 0.133
+            # if config['dataset'] == 'bytedance':
+                # self.v_feat = (self.v_feat - 0.212) / 0.133
                 # self.v_feat = (self.v_feat - self.v_feat.min(0)) / (self.v_feat.max(0) - self.v_feat.min(0) + 1e-9)
 
-                self.a_feat = (self.a_feat - 0.222) / 0.233
+                # self.a_feat = (self.a_feat - 0.222) / 0.233
                 # self.a_feat = (self.a_feat - self.a_feat.min(0)) / (self.a_feat.max(0) - self.a_feat.min(0) + 1e-9)
 
-                self.t_feat = (self.t_feat - 0.232) / 0.333
+                # self.t_feat = (self.t_feat - 0.232) / 0.333
                 # self.t_feat = (self.t_feat - self.t_feat.min(0)) / (self.t_feat.max(0) - self.t_feat.min(0) + 1e-9)
 
             assert self.v_feat is not None or self.t_feat is not None or self.a_feat is not None, 'Features all NONE'
